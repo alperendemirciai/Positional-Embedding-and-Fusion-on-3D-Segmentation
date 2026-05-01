@@ -1,0 +1,10 @@
+model:
+  variant: "V1SharedBackbone"
+pe:
+  type: "concat"
+fusion:
+  strategy: "mean"
+training:
+  batch_size: 2
+evaluation:
+  missing_modality: true

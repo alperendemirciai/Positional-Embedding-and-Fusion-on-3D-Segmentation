@@ -1,0 +1,10 @@
+model:
+  variant: "V0EarlyFusion"
+pe:
+  type: "film"
+  sinusoidal_num_freqs: 5
+  film_hidden_dim: 128
+training:
+  batch_size: 2
+evaluation:
+  missing_modality: false

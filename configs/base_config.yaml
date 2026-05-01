@@ -1,0 +1,51 @@
+data:
+  root: "dataset/BraTS2021_Training_Data"
+  splits_file: "data_utils/splits.json"
+  patch_size: [96, 96, 96]
+  num_workers: 4
+  cache_rate: 0.0        # 0=no cache, 1.0=full RAM cache (~30GB needed)
+  foreground_ratio: 0.5  # pos fraction in RandCropByPosNegLabeld
+
+model:
+  variant: "V0EarlyFusion"   # V0EarlyFusion | V1SharedBackbone | V2SeparateBackbones
+  base_channels: 16
+  depth: 4                   # encoder levels; bottleneck = depth+1
+  bottleneck_channels: 256
+
+fusion:
+  strategy: "mean"           # mean | weighted | attention
+
+training:
+  max_epochs: 300
+  batch_size: 2
+  lr: 1.0e-4
+  weight_decay: 1.0e-5
+  grad_clip: 1.0
+  early_stopping_patience: 50
+  mixed_precision: true
+  num_patches_per_sample: 2
+  loss: "dice_ce"
+  loss_dice_weight: 0.5
+
+pe:
+  type: "none"               # none | film | concat
+  sinusoidal_num_freqs: 5    # -> 30-dim PE vector
+  film_hidden_dim: 128
+
+inference:
+  sw_batch_size: 4           # reduce to 2 or 1 if OOM during inference
+  sw_overlap: 0.5
+  sw_mode: "gaussian"
+  threshold: 0.5
+  save_predictions: true
+
+evaluation:
+  compute_hd95: true
+  missing_modality: false    # set true for V1/V2 experiments
+
+logging:
+  tensorboard_dir: "experiments/logs"
+  checkpoint_dir: "checkpoints"
+  results_dir: "results"
+  log_every_n_epochs: 1
+  save_every_n_epochs: 50

@@ -1,0 +1,10 @@
+model:
+  variant: "V1SharedBackbone"
+pe:
+  type: "none"
+fusion:
+  strategy: "weighted"
+training:
+  batch_size: 2
+evaluation:
+  missing_modality: true

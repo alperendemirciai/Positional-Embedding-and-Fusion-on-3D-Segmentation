@@ -1,0 +1,8 @@
+model:
+  variant: "V0EarlyFusion"
+pe:
+  type: "none"
+training:
+  batch_size: 2
+evaluation:
+  missing_modality: false

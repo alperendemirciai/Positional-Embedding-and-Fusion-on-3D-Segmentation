@@ -1,0 +1,12 @@
+model:
+  variant: "V2SeparateBackbones"
+pe:
+  type: "film"
+  sinusoidal_num_freqs: 5
+  film_hidden_dim: 128
+fusion:
+  strategy: "mean"
+training:
+  batch_size: 1
+evaluation:
+  missing_modality: true
