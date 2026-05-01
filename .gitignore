@@ -1,2 +1,19 @@
+# Python
 *.pyc
+__pycache__/
+*.egg-info/
+.env
+
+# Dataset (large files, not committed)
 /dataset
+
+# Generated during runs
+data_utils/splits.json
+checkpoints/
+results/
+experiments/logs/
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
