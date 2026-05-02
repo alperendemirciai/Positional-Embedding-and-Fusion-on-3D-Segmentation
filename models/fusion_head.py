@@ -54,11 +54,14 @@ class AttentionFusion(nn.Module):
         stacked = torch.stack(logit_list, dim=1)        # (B, n_active, C, H, W, D)
         B, _, C, H, W, D = stacked.shape
 
-        # Build full-size attention input (pad missing modalities with zeros)
+        # Build full-size attention input with logits at their correct modality slots.
+        # Appending zeros at the end (old approach) is wrong: it places e.g. T2 at
+        # the T1ce slot when T1ce is missing, corrupting learned attention weights.
         if n < self.num_modalities:
-            pad = torch.zeros(B, self.num_modalities - n, C, H, W, D,
-                              device=stacked.device, dtype=stacked.dtype)
-            full = torch.cat([stacked, pad], dim=1)
+            full = torch.zeros(B, self.num_modalities, C, H, W, D,
+                               device=stacked.device, dtype=stacked.dtype)
+            for slot, src_idx in enumerate(active_indices):
+                full[:, src_idx] = stacked[:, slot]
         else:
             full = stacked
 

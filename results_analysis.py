@@ -138,13 +138,13 @@ def answer_research_questions(data: dict):
     v1 = mean_dice("v1_nope_mean")
     v2 = mean_dice("v2_nope_mean")
     print(f"\nQ1 — Full-modality mean Dice:")
-    if v0: print(f"  V0 (early): {v0:.3f}")
-    if v1: print(f"  V1 (shared late): {v1:.3f}")
-    if v2: print(f"  V2 (separate late): {v2:.3f}")
+    if v0 is not None: print(f"  V0 (early): {v0:.3f}")
+    if v1 is not None: print(f"  V1 (shared late): {v1:.3f}")
+    if v2 is not None: print(f"  V2 (separate late): {v2:.3f}")
 
     # Q2: Shared vs separate backbones
     print(f"\nQ2 — Shared (V1) vs Separate (V2) backbone (no PE, mean fusion):")
-    if v1 and v2:
+    if v1 is not None and v2 is not None:
         winner = "V1 (shared)" if v1 > v2 else "V2 (separate)"
         print(f"  V1: {v1:.3f}   V2: {v2:.3f}   Winner: {winner}")
 
@@ -154,12 +154,15 @@ def answer_research_questions(data: dict):
         variant = base.replace("_nope", "").replace("_mean", "")
         film_key = f"{variant}_film"
         concat_key = f"{variant}_concat"
-        base_val = mean_dice(base)
-        film_val = mean_dice(film_key)
+        base_val   = mean_dice(base)
+        film_val   = mean_dice(film_key)
         concat_val = mean_dice(concat_key)
-        if base_val:
-            print(f"  {base:<25s}: {base_val:.3f} (no PE) | "
-                  f"{film_val:.3f} (FiLM) | {concat_val:.3f} (concat)")
+        if base_val is None:
+            continue
+        film_str   = f"{film_val:.3f}"   if film_val   is not None else "n/a"
+        concat_str = f"{concat_val:.3f}" if concat_val is not None else "n/a"
+        print(f"  {base:<25s}: {base_val:.3f} (no PE) | "
+              f"{film_str} (FiLM) | {concat_str} (concat)")
 
     print("=" * 70)
 

@@ -27,7 +27,8 @@ class V0EarlyFusion(nn.Module):
 
         film_cond = None
         if self.pe_type == "film":
-            bottleneck_ch = model_cfg.get("bottleneck_channels", 256)
+            bottleneck_ch = model_cfg.get("base_channels", 16) * (
+                2 ** model_cfg.get("depth", 4))
             film_cond = FiLMPE(
                 num_freqs=pe_cfg.get("sinusoidal_num_freqs", 5),
                 bottleneck_ch=bottleneck_ch,

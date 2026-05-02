@@ -62,30 +62,6 @@ def _build_inferer(cfg: dict) -> SlidingWindowInferer:
     )
 
 
-def _make_forward_fn(model, pe_type: str, patch_size, device):
-    """Returns a callable that wraps model.forward for SlidingWindowInferer.
-
-    The inferer passes individual patch tensors; this wrapper adds PE signals.
-    """
-    def forward_fn(patch: torch.Tensor) -> torch.Tensor:
-        pc = cc = None
-        if pe_type in ("film", "concat"):
-            # Compute patch centre from the patch's spatial position.
-            # SlidingWindowInferer passes patches already extracted; we
-            # approximate the centre as (0.5, 0.5, 0.5) during sliding
-            # window — position metadata is injected via a closure below.
-            pc = _current_patch_center
-        if pe_type == "concat":
-            cc = make_coord_channels(pc, patch_size, VOL_SIZE).to(device)
-        return model(patch, patch_center=pc, coord_channels=cc)
-
-    return forward_fn
-
-
-# Module-level mutable reference used by the forward closure
-_current_patch_center: Optional[torch.Tensor] = None
-
-
 @torch.no_grad()
 def run_inference(
     model,
@@ -96,17 +72,20 @@ def run_inference(
 ) -> torch.Tensor:
     """Run full-volume sliding-window inference for one patient.
 
-    Returns logits of shape (1, 3, 240, 240, 155).
+    Returns logits of shape (1, 3, H, W, D).
+
+    Note on PE at inference: SlidingWindowInferer does not expose the window
+    position to the predictor.  For FiLM we use the volume centre (0.5, 0.5,
+    0.5) as a neutral conditioning signal.  For concat we build coordinate
+    channels relative to that same centre point.  Both are approximations;
+    they are consistent with the fallback used during validation.
     """
-    global _current_patch_center
-
-    pe_type    = cfg.get("pe", {}).get("type", "none")
-    patch_size = cfg["data"]["patch_size"]
+    pe_type       = cfg.get("pe", {}).get("type", "none")
+    patch_size    = cfg["data"]["patch_size"]
     model_variant = cfg.get("model", {}).get("variant", "V0EarlyFusion")
-    is_v0 = "V0" in model_variant
+    is_v0         = "V0" in model_variant
 
-    # patient_data is a raw dataset sample: each modality key has shape (1,H,W,D).
-    # Stack along dim=0 to get (4,H,W,D) then add batch dim → (1,4,H,W,D).
+    # Stack modalities: each key has shape (1, H, W, D) in a raw test sample.
     x = torch.stack(
         [patient_data[k].squeeze(0) for k in ["t1", "t1ce", "t2", "flair"]], dim=0
     ).unsqueeze(0).to(device)  # (1, 4, H, W, D)
@@ -117,10 +96,7 @@ def run_inference(
         B, C, H, W, D = patch.shape
         pc = cc = None
         if pe_type in ("film", "concat"):
-            _current_patch_center = torch.tensor(
-                [[0.5, 0.5, 0.5]] * B, dtype=torch.float32, device=device
-            )
-            pc = _current_patch_center
+            pc = torch.full((B, 3), 0.5, dtype=torch.float32, device=device)
         if pe_type == "concat":
             cc = make_coord_channels(pc, (H, W, D), VOL_SIZE).to(device)
         if is_v0:
@@ -130,40 +106,35 @@ def run_inference(
                          active_modalities=active_modalities)
 
     model.eval()
-    logits = inferer(inputs=x, network=predictor)
-    return logits  # (1, 3, H, W, D)
+    return inferer(inputs=x, network=predictor)  # (1, 3, H, W, D)
 
 
-def evaluate_patient(
-    model,
-    patient_data: dict,
-    cfg: dict,
-    device: torch.device,
+def _infer_and_score(
+    model, sample: dict, cfg: dict, device: torch.device,
+    active_modalities: Tuple[int, ...],
     dice_metric: DiceMetric,
-    hd95_metric: Optional[HausdorffDistanceMetric],
-    active_modalities: Tuple[int, ...] = (0, 1, 2, 3),
-) -> Dict[str, float]:
-    threshold = cfg.get("inference", {}).get("threshold", 0.5)
+) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, float]]:
+    """Run inference once, accumulate into dice_metric, return (pred, target, scores).
 
-    logits = run_inference(model, patient_data, cfg, device, active_modalities)
-    probs  = logits.sigmoid()
-    pred   = (probs > threshold).long()
-    target = patient_data["seg"].unsqueeze(0).long().to(device)  # (1,3,H,W,D)
-    target_for_metric = target  # DiceMetric wants long
+    Centralises the inference+scoring logic so neither the main loop nor the
+    missing-modality loop need to call run_inference twice.
+    """
+    threshold = cfg.get("inference", {}).get("threshold", 0.5)
+    logits = run_inference(model, sample, cfg, device, active_modalities)
+    pred   = (logits.sigmoid() > threshold).long()
+    target = sample["seg"].unsqueeze(0).long().to(device)
 
     dice_metric(y_pred=pred, y=target)
-    if hd95_metric is not None:
-        hd95_metric(y_pred=pred, y=target)
 
-    # Per-patient scores (detached)
-    scores = {}
+    scores: Dict[str, float] = {}
     for i, r in enumerate(REGION_NAMES):
         p = pred[0, i].float()
         t = target[0, i].float()
         inter = (p * t).sum()
         union = p.sum() + t.sum()
         scores[r] = (2 * inter / (union + 1e-8)).item()
-    return scores
+
+    return pred, target, scores
 
 
 def run_evaluation(
@@ -178,11 +149,11 @@ def run_evaluation(
 
     Saves per-patient predictions as .nii.gz and returns a results dict.
     """
-    results_dir = Path(cfg.get("logging", {}).get("results_dir", "results"))
-    pred_dir    = results_dir / "predictions" / experiment_name
-    save_preds  = cfg.get("inference", {}).get("save_predictions", True)
+    results_dir  = Path(cfg.get("logging", {}).get("results_dir", "results"))
+    pred_dir     = results_dir / "predictions" / experiment_name
+    save_preds   = cfg.get("inference", {}).get("save_predictions", True)
     compute_hd95 = cfg.get("evaluation", {}).get("compute_hd95", False)
-    data_root   = cfg["data"]["root"]
+    data_root    = cfg["data"]["root"]
 
     dice_metric = DiceMetric(include_background=True, reduction="mean_batch",
                              get_not_nans=False)
@@ -200,15 +171,15 @@ def run_evaluation(
         if isinstance(patient_id, list):
             patient_id = patient_id[0]
 
-        scores = evaluate_patient(
-            model, sample, cfg, device, dice_metric, hd95_metric,
-            active_modalities=(0, 1, 2, 3),
+        pred, target, scores = _infer_and_score(
+            model, sample, cfg, device, (0, 1, 2, 3), dice_metric
         )
         per_patient[patient_id] = scores
 
+        if hd95_metric is not None:
+            hd95_metric(y_pred=pred, y=target)
+
         if save_preds:
-            logits = run_inference(model, sample, cfg, device, (0, 1, 2, 3))
-            pred   = (logits.sigmoid() > cfg.get("inference", {}).get("threshold", 0.5))
             label_map = _pred_to_label_map(pred[0])
             ref_path  = str(
                 Path(data_root) / patient_id / f"{patient_id}_t1.nii.gz"
@@ -229,7 +200,7 @@ def run_evaluation(
         agg_hd95 = hd95_metric.aggregate().tolist()
         hd95_metric.reset()
 
-    # Missing modality evaluation
+    # ---- Missing-modality evaluation (V1 / V2 only) ----
     missing_results: dict = {}
     if missing_modality:
         print("\n  Running missing-modality evaluation …")
@@ -241,12 +212,12 @@ def run_evaluation(
                              get_not_nans=False)
             for idx in range(len(test_ds)):
                 sample = test_ds[idx]
-                evaluate_patient(model, sample, cfg, device, dm, None, subset)
+                pred, _, _ = _infer_and_score(
+                    model, sample, cfg, device, subset, dm
+                )
                 if save_preds:
-                    logits = run_inference(model, sample, cfg, device, subset)
-                    pred   = (logits.sigmoid() > 0.5)
-                    lm     = _pred_to_label_map(pred[0])
-                    pid    = sample.get("patient_id", f"patient_{idx:04d}")
+                    lm  = _pred_to_label_map(pred[0])
+                    pid = sample.get("patient_id", f"patient_{idx:04d}")
                     if isinstance(pid, list):
                         pid = pid[0]
                     ref_path = str(
@@ -259,17 +230,18 @@ def run_evaluation(
             missing_results[key] = {r: agg[i] for i, r in enumerate(REGION_NAMES)}
             print(f"    {key:20s}  WT={agg[0]:.3f} TC={agg[1]:.3f} ET={agg[2]:.3f}")
 
-    # Compute per-region std from per_patient scores
-    std_scores: Dict[str, float] = {}
-    for r in REGION_NAMES:
-        vals = [v[r] for v in per_patient.values()]
-        std_scores[r] = float(np.std(vals))
+    # Per-region std across patients
+    std_scores: Dict[str, float] = {
+        r: float(np.std([v[r] for v in per_patient.values()]))
+        for r in REGION_NAMES
+    }
 
     results = {
-        "per_patient":     per_patient,
-        "mean":            mean_scores,
-        "std":             std_scores,
-        "hd95_mean":       {r: agg_hd95[i] for i, r in enumerate(REGION_NAMES)} if agg_hd95 else None,
+        "per_patient":      per_patient,
+        "mean":             mean_scores,
+        "std":              std_scores,
+        "hd95_mean":        {r: agg_hd95[i] for i, r in enumerate(REGION_NAMES)}
+                            if agg_hd95 else None,
         "missing_modality": missing_results,
     }
 

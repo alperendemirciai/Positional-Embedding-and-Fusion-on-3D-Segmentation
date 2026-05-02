@@ -30,9 +30,34 @@ ALL_KEYS = MODALITY_KEYS + ["seg"]
 VOL_SIZE = (240, 240, 155)
 
 
+def _find_crop_start(vol) -> list:
+    """Accumulate all SpatialCrop roi_start offsets from a MONAI MetaTensor.
+
+    In MONAI 1.x each spatial crop (CropForegroundd, RandCropByPosNegLabeld,
+    etc.) records itself in tensor.meta["applied_operations"] with
+    extra_info["roi_start"].  Both crops must be summed to recover the voxel
+    position in the original 240×240×155 volume:
+
+        global_start = CropForegroundd.roi_start + RandCropByPosNegLabeld.roi_start
+
+    Returns a 3-element int list, or None when metadata is unavailable.
+    """
+    if not hasattr(vol, "meta"):
+        return None
+    total = [0, 0, 0]
+    found = False
+    for op in vol.meta.get("applied_operations", []):
+        roi_start = op.get("extra_info", {}).get("roi_start")
+        if roi_start is not None:
+            for i, v in enumerate(roi_start):
+                total[i] += int(v)
+            found = True
+    return total if found else None
+
+
 class RecordPatchCenterd(MapTransform):
-    """Reads crop metadata written by RandCropByPosNegLabeld and stores the
-    normalised patch centre in batch["patch_center"] as a (3,) float32 tensor."""
+    """Reads crop metadata from a MONAI MetaTensor and stores the normalised
+    patch centre in batch["patch_center"] as a (3,) float32 tensor."""
 
     def __init__(self, ref_key: str = "t1", vol_size=VOL_SIZE):
         super().__init__(keys=[ref_key], allow_missing_keys=True)
@@ -41,16 +66,11 @@ class RecordPatchCenterd(MapTransform):
 
     def __call__(self, data):
         d = dict(data)
-        meta = d.get(f"{self.ref_key}_meta_dict", {})
-        ops = meta.get("applied_operations", [])
-        start = None
-        for op in reversed(ops):
-            if "RandCropByPosNeg" in str(op.get("class", "")):
-                start = op.get("extra_info", {}).get("crop_location", None)
-                break
+        vol = d[self.ref_key]
+        start = _find_crop_start(vol)
 
         if start is not None:
-            patch_size = d[self.ref_key].shape[-3:]
+            patch_size = vol.shape[-3:]
             cx = (start[0] + patch_size[0] / 2) / self.vol_size[0]
             cy = (start[1] + patch_size[1] / 2) / self.vol_size[1]
             cz = (start[2] + patch_size[2] / 2) / self.vol_size[2]
@@ -71,17 +91,9 @@ class AddCoordChannelsd(MapTransform):
 
     def __call__(self, data):
         d = dict(data)
-        meta = d.get(f"{self.ref_key}_meta_dict", {})
-        ops = meta.get("applied_operations", [])
-        start = [0, 0, 0]
-        for op in reversed(ops):
-            if "RandCropByPosNeg" in str(op.get("class", "")):
-                loc = op.get("extra_info", {}).get("crop_location", None)
-                if loc is not None:
-                    start = list(loc)
-                break
-
         vol = d[self.ref_key]
+        start = _find_crop_start(vol) or [0, 0, 0]
+
         H, W, D = vol.shape[-3], vol.shape[-2], vol.shape[-1]
         xs = (start[0] + np.arange(H)) / self.vol_size[0]
         ys = (start[1] + np.arange(W)) / self.vol_size[1]
@@ -120,7 +132,7 @@ def _base_transforms() -> List:
 def build_train_transform(patch_size, num_samples: int = 2,
                           pe_type: str = "none") -> Compose:
     transforms = _base_transforms() + [
-        SpatialPadd(keys=ALL_KEYS, spatial_size=patch_size, mode="constant"),
+        SpatialPadd(keys=ALL_KEYS, spatial_size=patch_size, mode="constant", method="end"),
         RandCropByPosNegLabeld(
             keys=ALL_KEYS,
             label_key="seg",
