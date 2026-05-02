@@ -11,7 +11,8 @@ from torch.utils.tensorboard import SummaryWriter
 from monai.losses import DiceCELoss
 from monai.metrics import DiceMetric
 
-from data_utils.brats_dataset import stack_modalities
+from data_utils.brats_dataset import stack_modalities, VOL_SIZE
+from models.pe_modules import make_coord_channels
 
 
 REGION_NAMES = ["WT", "TC", "ET"]
@@ -123,6 +124,13 @@ class Trainer:
                             get_not_nans=False)
         for batch in loader:
             x, y, pc, cc = _prepare_batch(batch, self.device, self.pe_type)
+            # Val volumes are not randomly cropped, so PE metadata is absent.
+            # Use volume-centre as a fallback; good enough for early stopping.
+            if self.pe_type in ("film", "concat") and pc is None:
+                B = x.shape[0]
+                pc = torch.full((B, 3), 0.5, dtype=torch.float32, device=self.device)
+            if self.pe_type == "concat" and cc is None:
+                cc = make_coord_channels(pc, x.shape[2:], VOL_SIZE).to(self.device)
             _device_type = "cuda" if self.device.type == "cuda" else "cpu"
             with autocast(_device_type, enabled=self.use_amp):
                 logits = self.model(x, patch_center=pc, coord_channels=cc)
