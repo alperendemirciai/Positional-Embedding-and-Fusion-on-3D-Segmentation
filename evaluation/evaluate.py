@@ -29,6 +29,17 @@ SUBSET_KEYS = {
 }
 
 
+def _sanitize(obj):
+    """Recursively replace float nan/inf with None so json.dump never raises."""
+    if isinstance(obj, float):
+        return None if not np.isfinite(obj) else obj
+    if isinstance(obj, dict):
+        return {k: _sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize(v) for v in obj]
+    return obj
+
+
 def _pred_to_label_map(pred: torch.Tensor) -> np.ndarray:
     """Convert (3, H, W, D) binary prediction (WT/TC/ET) to a single-channel
     label map with BraTS label encoding {0, 1, 2, 4}."""
@@ -158,7 +169,7 @@ def run_evaluation(
     dice_metric = DiceMetric(include_background=True, reduction="mean_batch",
                              get_not_nans=False)
     hd95_metric = (
-        HausdorffDistanceMetric(include_background=False, percentile=95,
+        HausdorffDistanceMetric(include_background=True, percentile=95,
                                 reduction="mean_batch", get_not_nans=False)
         if compute_hd95 else None
     )
@@ -248,6 +259,6 @@ def run_evaluation(
     out_path = results_dir / f"{experiment_name}_test_results.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w") as f:
-        json.dump(results, f, indent=2)
+        json.dump(_sanitize(results), f, indent=2)
     print(f"\n  Results saved to {out_path}")
     return results
