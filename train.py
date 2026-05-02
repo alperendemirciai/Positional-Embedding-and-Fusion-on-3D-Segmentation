@@ -63,11 +63,15 @@ def main():
     parser.add_argument("--experiment_name", required=True,  help="Unique name for this run")
     parser.add_argument("--resume",          default=None,   help="Path to checkpoint to resume from")
     parser.add_argument("--seed",            type=int, default=42)
+    parser.add_argument("--max_epochs",      type=int, default=None,
+                        help="Override max_epochs from config (useful for quick runs)")
     args = parser.parse_args()
 
     set_seed(args.seed)
 
     cfg = load_config(args.config)
+    if args.max_epochs is not None:
+        cfg["training"]["max_epochs"] = args.max_epochs
     pe_type = cfg.get("pe", {}).get("type", "none")
 
     # Build dataset
