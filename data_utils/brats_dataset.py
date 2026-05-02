@@ -17,6 +17,7 @@ from monai.transforms import (
     RandRotate90d,
     RandScaleIntensityd,
     RandShiftIntensityd,
+    SpatialPadd,
     ToTensord,
     ConvertToMultiChannelBasedOnBratsClassesd,
     MapTransform,
@@ -119,6 +120,7 @@ def _base_transforms() -> List:
 def build_train_transform(patch_size, num_samples: int = 2,
                           pe_type: str = "none") -> Compose:
     transforms = _base_transforms() + [
+        SpatialPadd(keys=ALL_KEYS, spatial_size=patch_size, mode="constant"),
         RandCropByPosNegLabeld(
             keys=ALL_KEYS,
             label_key="seg",
