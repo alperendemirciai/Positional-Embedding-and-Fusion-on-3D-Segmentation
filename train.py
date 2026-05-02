@@ -78,13 +78,16 @@ def main():
     batch_size = train_cfg["batch_size"]
     num_workers = cfg["data"].get("num_workers", 4)
 
+    from monai.data import pad_list_data_collate
     train_loader = DataLoader(
         train_ds, batch_size=batch_size, shuffle=True,
         num_workers=num_workers, pin_memory=True,
+        collate_fn=pad_list_data_collate,
     )
     val_loader = DataLoader(
         val_ds, batch_size=1, shuffle=False,
         num_workers=num_workers, pin_memory=True,
+        collate_fn=pad_list_data_collate,
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

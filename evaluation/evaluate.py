@@ -105,7 +105,11 @@ def run_inference(
     model_variant = cfg.get("model", {}).get("variant", "V0EarlyFusion")
     is_v0 = "V0" in model_variant
 
-    x = stack_modalities(patient_data).unsqueeze(0).to(device)  # (1, 4, H, W, D)
+    # patient_data is a raw dataset sample: each modality key has shape (1,H,W,D).
+    # Stack along dim=0 to get (4,H,W,D) then add batch dim → (1,4,H,W,D).
+    x = torch.stack(
+        [patient_data[k].squeeze(0) for k in ["t1", "t1ce", "t2", "flair"]], dim=0
+    ).unsqueeze(0).to(device)  # (1, 4, H, W, D)
 
     inferer = _build_inferer(cfg)
 
@@ -144,7 +148,8 @@ def evaluate_patient(
     logits = run_inference(model, patient_data, cfg, device, active_modalities)
     probs  = logits.sigmoid()
     pred   = (probs > threshold).long()
-    target = patient_data["seg"].unsqueeze(0).long().to(device)
+    target = patient_data["seg"].unsqueeze(0).long().to(device)  # (1,3,H,W,D)
+    target_for_metric = target  # DiceMetric wants long
 
     dice_metric(y_pred=pred, y=target)
     if hd95_metric is not None:
@@ -179,7 +184,7 @@ def run_evaluation(
     compute_hd95 = cfg.get("evaluation", {}).get("compute_hd95", False)
     data_root   = cfg["data"]["root"]
 
-    dice_metric = DiceMetric(include_background=False, reduction="mean_batch",
+    dice_metric = DiceMetric(include_background=True, reduction="mean_batch",
                              get_not_nans=False)
     hd95_metric = (
         HausdorffDistanceMetric(include_background=False, percentile=95,
@@ -232,7 +237,7 @@ def run_evaluation(
             if subset == (0, 1, 2, 3):
                 continue
             key = SUBSET_KEYS[subset]
-            dm  = DiceMetric(include_background=False, reduction="mean_batch",
+            dm  = DiceMetric(include_background=True, reduction="mean_batch",
                              get_not_nans=False)
             for idx in range(len(test_ds)):
                 sample = test_ds[idx]

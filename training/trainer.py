@@ -4,7 +4,7 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
@@ -19,7 +19,7 @@ REGION_NAMES = ["WT", "TC", "ET"]
 
 def _prepare_batch(batch, device, pe_type):
     x  = stack_modalities(batch).to(device)          # (B, 4, H, W, D)
-    y  = batch["seg"].to(device)                     # (B, 3, H, W, D)
+    y  = batch["seg"].to(device).float()              # (B, 3, H, W, D) — float for loss
     pc = batch.get("patch_center")
     cc = batch.get("coord_channels")
     if pc is not None:
@@ -68,7 +68,8 @@ class Trainer:
             T_max=self.max_epochs,
             eta_min=1e-6,
         )
-        self.scaler = GradScaler(enabled=self.use_amp)
+        self.scaler = GradScaler("cpu" if not torch.cuda.is_available() else "cuda",
+                                  enabled=self.use_amp)
         self.writer = SummaryWriter(log_dir=str(self.tb_dir / experiment_name))
 
         self.best_val_dice   = -1.0
@@ -102,7 +103,8 @@ class Trainer:
         for batch in loader:
             x, y, pc, cc = _prepare_batch(batch, self.device, self.pe_type)
             self.optimizer.zero_grad(set_to_none=True)
-            with autocast(enabled=self.use_amp):
+            _device_type = "cuda" if self.device.type == "cuda" else "cpu"
+            with autocast(_device_type, enabled=self.use_amp):
                 logits = self.model(x, patch_center=pc, coord_channels=cc)
                 loss   = self.criterion(logits, y)
             self.scaler.scale(loss).backward()
@@ -117,11 +119,12 @@ class Trainer:
     @torch.no_grad()
     def _val_epoch(self, loader: DataLoader) -> dict:
         self.model.eval()
-        metric = DiceMetric(include_background=False, reduction="mean_batch",
+        metric = DiceMetric(include_background=True, reduction="mean_batch",
                             get_not_nans=False)
         for batch in loader:
             x, y, pc, cc = _prepare_batch(batch, self.device, self.pe_type)
-            with autocast(enabled=self.use_amp):
+            _device_type = "cuda" if self.device.type == "cuda" else "cpu"
+            with autocast(_device_type, enabled=self.use_amp):
                 logits = self.model(x, patch_center=pc, coord_channels=cc)
             pred = (logits.sigmoid() > 0.5).long()
             metric(y_pred=pred, y=y.long())
