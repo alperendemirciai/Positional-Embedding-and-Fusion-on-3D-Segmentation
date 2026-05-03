@@ -1,0 +1,9 @@
+model:
+  variant: "V0SingleModality"
+  modality_index: 3   # FLAIR
+pe:
+  type: "none"
+training:
+  batch_size: 2
+evaluation:
+  missing_modality: false

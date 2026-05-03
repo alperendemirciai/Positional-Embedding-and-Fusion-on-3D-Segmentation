@@ -1,0 +1,9 @@
+model:
+  variant: "V0SingleModality"
+  modality_index: 2   # T2
+pe:
+  type: "none"
+training:
+  batch_size: 2
+evaluation:
+  missing_modality: false

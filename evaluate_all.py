@@ -27,6 +27,11 @@ EXPERIMENTS = [
     ("v2_nope_attention","configs/v2_nope_attention.yaml"),
     ("v2_film",          "configs/v2_film.yaml"),
     ("v2_concat",        "configs/v2_concat.yaml"),
+    # Single-modality baselines
+    ("single_t1",        "configs/single_t1.yaml"),
+    ("single_t1ce",      "configs/single_t1ce.yaml"),
+    ("single_t2",        "configs/single_t2.yaml"),
+    ("single_flair",     "configs/single_flair.yaml"),
 ]
 
 
@@ -53,6 +58,9 @@ def build_model(cfg: dict):
     if variant == "V0EarlyFusion":
         from models.v0_early_fusion import V0EarlyFusion
         return V0EarlyFusion(cfg)
+    elif variant == "V0SingleModality":
+        from models.v0_single_modality import V0SingleModality
+        return V0SingleModality(cfg)
     elif variant == "V1SharedBackbone":
         from models.v1_shared_late import V1SharedBackbone
         return V1SharedBackbone(cfg)

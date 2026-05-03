@@ -41,6 +41,9 @@ def build_model(cfg: dict):
     if variant == "V0EarlyFusion":
         from models.v0_early_fusion import V0EarlyFusion
         return V0EarlyFusion(cfg)
+    elif variant == "V0SingleModality":
+        from models.v0_single_modality import V0SingleModality
+        return V0SingleModality(cfg)
     elif variant == "V1SharedBackbone":
         from models.v1_shared_late import V1SharedBackbone
         return V1SharedBackbone(cfg)
