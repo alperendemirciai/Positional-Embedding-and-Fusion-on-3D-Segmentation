@@ -17,6 +17,10 @@ def generate_splits(data_root: str, output_path: str, seed: int = 42):
 
     n_train = int(total * 0.70)
     n_val   = int(total * 0.15)
+    assert n_train > 0 and n_val > 0, (
+        f"Dataset too small to split: {total} patients yields "
+        f"n_train={n_train}, n_val={n_val}"
+    )
 
     train_ids = shuffled[:n_train]
     val_ids   = shuffled[n_train:n_train + n_val]

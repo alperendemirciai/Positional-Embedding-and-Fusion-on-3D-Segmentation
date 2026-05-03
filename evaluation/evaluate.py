@@ -8,10 +8,10 @@ from typing import Dict, List, Optional, Tuple
 import nibabel as nib
 import numpy as np
 import torch
-from monai.inferers import SlidingWindowInferer
+import torch.nn.functional as F
 from monai.metrics import DiceMetric, HausdorffDistanceMetric
 
-from data_utils.brats_dataset import MODALITY_KEYS, VOL_SIZE, stack_modalities
+from data_utils.brats_dataset import MODALITY_KEYS, VOL_SIZE, stack_modalities, _find_crop_start
 from models.pe_modules import make_coord_channels
 
 
@@ -62,15 +62,17 @@ def _save_prediction(label_map: np.ndarray, patient_id: str,
     nib.save(img, str(out_dir / f"{patient_id}_pred.nii.gz"))
 
 
-def _build_inferer(cfg: dict) -> SlidingWindowInferer:
-    inf_cfg = cfg.get("inference", {})
-    return SlidingWindowInferer(
-        roi_size=cfg["data"]["patch_size"],
-        sw_batch_size=inf_cfg.get("sw_batch_size", 4),
-        overlap=inf_cfg.get("sw_overlap", 0.5),
-        mode=inf_cfg.get("sw_mode", "gaussian"),
-        sigma_scale=0.125,
+def _build_gaussian_importance_map(patch_size, sigma_scale: float, device) -> torch.Tensor:
+    """Gaussian importance map matching MONAI's sigma_scale convention."""
+    coords = [
+        torch.arange(p, dtype=torch.float32, device=device) - (p - 1) / 2.0
+        for p in patch_size
+    ]
+    grids = torch.meshgrid(*coords, indexing="ij")
+    imp = torch.exp(
+        -0.5 * sum((g / (sigma_scale * p)) ** 2 for g, p in zip(grids, patch_size))
     )
+    return imp.clamp(min=1e-6)
 
 
 @torch.no_grad()
@@ -85,39 +87,98 @@ def run_inference(
 
     Returns logits of shape (1, 3, H, W, D).
 
-    Note on PE at inference: SlidingWindowInferer does not expose the window
-    position to the predictor.  For FiLM we use the volume centre (0.5, 0.5,
-    0.5) as a neutral conditioning signal.  For concat we build coordinate
-    channels relative to that same centre point.  Both are approximations;
-    they are consistent with the fallback used during validation.
+    Each sliding window receives its actual normalised position in the original
+    240×240×155 volume as PE conditioning, derived from the CropForeground
+    offset stored in patient_data["t1"].meta plus the window's position inside
+    the cropped volume.
     """
     pe_type       = cfg.get("pe", {}).get("type", "none")
-    patch_size    = cfg["data"]["patch_size"]
+    patch_size    = tuple(cfg["data"]["patch_size"])
+    inf_cfg       = cfg.get("inference", {})
+    overlap       = inf_cfg.get("sw_overlap", 0.5)
+    sw_batch_size = inf_cfg.get("sw_batch_size", 4)
+    sigma_scale   = inf_cfg.get("sigma_scale", 0.125)
+    mode          = inf_cfg.get("sw_mode", "gaussian")
     model_variant = cfg.get("model", {}).get("variant", "V0EarlyFusion")
     is_v0         = "V0" in model_variant
 
-    # Stack modalities: each key has shape (1, H, W, D) in a raw test sample.
+    # Foreground crop offset — needed to compute global voxel coordinates
+    fg_offset = _find_crop_start(patient_data["t1"])
+    if fg_offset is None:
+        fg_offset = [0, 0, 0]
+
+    # Stack modalities: each key has shape (1, H, W, D) in a test sample.
     x = torch.stack(
         [patient_data[k].squeeze(0) for k in ["t1", "t1ce", "t2", "flair"]], dim=0
     ).unsqueeze(0).to(device)  # (1, 4, H, W, D)
 
-    inferer = _build_inferer(cfg)
+    _, C, H, W, D = x.shape
 
-    def predictor(patch: torch.Tensor) -> torch.Tensor:
-        B, C, H, W, D = patch.shape
-        pc = cc = None
-        if pe_type in ("film", "concat"):
-            pc = torch.full((B, 3), 0.5, dtype=torch.float32, device=device)
-        if pe_type == "concat":
-            cc = make_coord_channels(pc, (H, W, D), VOL_SIZE).to(device)
-        if is_v0:
-            return model(patch, patch_center=pc, coord_channels=cc)
-        else:
-            return model(patch, patch_center=pc, coord_channels=cc,
-                         active_modalities=active_modalities)
+    # Pad so every dimension covers at least one full patch
+    pad_h = max(0, patch_size[0] - H)
+    pad_w = max(0, patch_size[1] - W)
+    pad_d = max(0, patch_size[2] - D)
+    if pad_h > 0 or pad_w > 0 or pad_d > 0:
+        x = F.pad(x, (0, pad_d, 0, pad_w, 0, pad_h))
+    _, C, Hp, Wp, Dp = x.shape
+
+    # Sliding window start positions
+    scan = tuple(max(1, int(p * (1 - overlap))) for p in patch_size)
+    def _starts(size, p_size, stride):
+        s = list(range(0, size - p_size + 1, stride))
+        if not s or s[-1] + p_size < size:
+            s.append(size - p_size)
+        return s
+
+    starts_h = _starts(Hp, patch_size[0], scan[0])
+    starts_w = _starts(Wp, patch_size[1], scan[1])
+    starts_d = _starts(Dp, patch_size[2], scan[2])
+    positions = [(h, w, d) for h in starts_h for w in starts_w for d in starts_d]
+
+    imp = (
+        _build_gaussian_importance_map(patch_size, sigma_scale, device)
+        if mode == "gaussian"
+        else torch.ones(patch_size, dtype=torch.float32, device=device)
+    )
+
+    output    = torch.zeros(1, 3, Hp, Wp, Dp, device=device)
+    count_map = torch.zeros(1, 1, Hp, Wp, Dp, device=device)
 
     model.eval()
-    return inferer(inputs=x, network=predictor)  # (1, 3, H, W, D)
+    for batch_start in range(0, len(positions), sw_batch_size):
+        batch_pos = positions[batch_start:batch_start + sw_batch_size]
+        patches = torch.stack([
+            x[0, :, h:h + patch_size[0], w:w + patch_size[1], d:d + patch_size[2]]
+            for h, w, d in batch_pos
+        ], dim=0)  # (n, C, pH, pW, pD)
+
+        pc = cc = None
+        if pe_type in ("film", "concat"):
+            centers = [
+                [
+                    (fg_offset[0] + h + patch_size[0] / 2) / VOL_SIZE[0],
+                    (fg_offset[1] + w + patch_size[1] / 2) / VOL_SIZE[1],
+                    (fg_offset[2] + d + patch_size[2] / 2) / VOL_SIZE[2],
+                ]
+                for h, w, d in batch_pos
+            ]
+            pc = torch.tensor(centers, dtype=torch.float32, device=device)
+        if pe_type == "concat":
+            cc = make_coord_channels(pc, patch_size, VOL_SIZE)
+
+        if is_v0:
+            out = model(patches, patch_center=pc, coord_channels=cc)
+        else:
+            out = model(patches, patch_center=pc, coord_channels=cc,
+                        active_modalities=active_modalities)
+
+        for j, (h, w, d) in enumerate(batch_pos):
+            output[0, :, h:h + patch_size[0], w:w + patch_size[1], d:d + patch_size[2]] += \
+                out[j] * imp.unsqueeze(0)
+            count_map[0, 0, h:h + patch_size[0], w:w + patch_size[1], d:d + patch_size[2]] += imp
+
+    result = output / count_map.clamp(min=1e-8)
+    return result[:, :, :H, :W, :D]
 
 
 def _infer_and_score(
@@ -143,7 +204,10 @@ def _infer_and_score(
         t = target[0, i].float()
         inter = (p * t).sum()
         union = p.sum() + t.sum()
-        scores[r] = (2 * inter / (union + 1e-8)).item()
+        if union == 0:
+            scores[r] = 1.0  # both pred and GT absent — perfect agreement
+        else:
+            scores[r] = (2 * inter / union).item()
 
     return pred, target, scores
 

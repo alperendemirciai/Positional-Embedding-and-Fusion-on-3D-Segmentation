@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 
 from models.base_unet import UNet3D
-from models.fusion_head import build_fusion_head
+from models.fusion_head import build_fusion_head, MeanFusion
 from models.pe_modules import FiLMPE
 
 
@@ -63,6 +63,9 @@ class V2SeparateBackbones(nn.Module):
     def forward(self, modalities: torch.Tensor,
                 patch_center=None, coord_channels=None,
                 active_modalities: Tuple[int, ...] = (0, 1, 2, 3)):
+        assert len(active_modalities) > 0, "At least one modality required"
+        if self.pe_type == "concat":
+            assert coord_channels is not None, "coord_channels required for concat PE"
         logit_list = []
         for i in active_modalities:
             name = MODALITY_NAMES[i]
@@ -71,8 +74,7 @@ class V2SeparateBackbones(nn.Module):
                 x = torch.cat([x, coord_channels], dim=1)   # (B, 4, H, W, D)
             logit_list.append(self.backbones[name](x, patch_center))
 
-        strategy = self.fusion.__class__.__name__
-        if strategy == "MeanFusion":
+        if isinstance(self.fusion, MeanFusion):
             return self.fusion(logit_list)
         else:
             return self.fusion(logit_list, active_indices=active_modalities)

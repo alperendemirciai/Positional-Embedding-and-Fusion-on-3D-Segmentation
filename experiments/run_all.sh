@@ -3,7 +3,7 @@
 # Usage: bash experiments/run_all.sh
 #        bash experiments/run_all.sh v0_nope v0_film   # run specific experiments only
 
-set -e
+set -euo pipefail   # strict mode for setup steps only; disabled per-experiment below
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
@@ -46,7 +46,8 @@ if [ ! -f "data_utils/splits.json" ]; then
         --seed      42
 fi
 
-# Training phase
+# Training phase — failures are logged but do not abort remaining experiments
+FAILED=()
 for EXP in "${EXPERIMENTS[@]}"; do
     CFG="configs/${EXP}.yaml"
     if [ ! -f "$CFG" ]; then
@@ -55,21 +56,41 @@ for EXP in "${EXPERIMENTS[@]}"; do
     fi
 
     CKPT="checkpoints/${EXP}_best.pth"
+
+    # Validate checkpoint integrity before trusting the skip (Bug 20)
     if [ -f "$CKPT" ]; then
-        echo ""
-        echo ">>> [SKIP] $EXP — checkpoint already exists at $CKPT"
-        continue
+        if python -c "import torch; torch.load('$CKPT', map_location='cpu')" 2>/dev/null; then
+            echo ""
+            echo ">>> [SKIP] $EXP — valid checkpoint already exists at $CKPT"
+            continue
+        else
+            echo ">>> [WARN] $EXP — corrupt checkpoint at $CKPT, removing and retraining"
+            rm -f "$CKPT"
+        fi
     fi
 
     echo ""
     echo "================================================================"
     echo ">>> Training: $EXP"
     echo "================================================================"
+    set +e
     python train.py \
         --config          "$CFG" \
         --experiment_name "$EXP" \
         --seed            42
+    TRAIN_STATUS=$?
+    set -e
+
+    if [ $TRAIN_STATUS -ne 0 ]; then
+        echo "  [FAILED] $EXP exited with status $TRAIN_STATUS — continuing with remaining experiments"
+        FAILED+=("$EXP")
+    fi
 done
+
+if [ ${#FAILED[@]} -gt 0 ]; then
+    echo ""
+    echo ">>> WARNING: the following experiments failed: ${FAILED[*]}"
+fi
 
 # Evaluation phase
 echo ""

@@ -18,6 +18,7 @@ class SinusoidalPE(nn.Module):
 
     def forward(self, coords: torch.Tensor) -> torch.Tensor:
         # coords: (B, 3)
+        coords = coords.to(self.freqs.device)
         feats = []
         for f in self.freqs:
             feats.append(torch.sin(f * coords))

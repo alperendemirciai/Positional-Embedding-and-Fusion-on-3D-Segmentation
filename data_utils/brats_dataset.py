@@ -66,6 +66,9 @@ class RecordPatchCenterd(MapTransform):
 
     def __call__(self, data):
         d = dict(data)
+        if self.ref_key not in d:
+            d["patch_center"] = torch.tensor([0.5, 0.5, 0.5], dtype=torch.float32)
+            return d
         vol = d[self.ref_key]
         start = _find_crop_start(vol)
 
@@ -91,8 +94,17 @@ class AddCoordChannelsd(MapTransform):
 
     def __call__(self, data):
         d = dict(data)
+        if self.ref_key not in d:
+            return d
         vol = d[self.ref_key]
-        start = _find_crop_start(vol) or [0, 0, 0]
+        start = _find_crop_start(vol)
+        if start is None:
+            H_s, W_s, D_s = vol.shape[-3], vol.shape[-2], vol.shape[-1]
+            start = [
+                self.vol_size[0] * 0.5 - H_s / 2,
+                self.vol_size[1] * 0.5 - W_s / 2,
+                self.vol_size[2] * 0.5 - D_s / 2,
+            ]
 
         H, W, D = vol.shape[-3], vol.shape[-2], vol.shape[-1]
         xs = (start[0] + np.arange(H)) / self.vol_size[0]
@@ -131,6 +143,9 @@ def _base_transforms() -> List:
 
 def build_train_transform(patch_size, num_samples: int = 2,
                           pe_type: str = "none") -> Compose:
+    # Keys to apply geometric augmentations to; coord_channels must move with the image
+    aug_keys = ALL_KEYS + (["coord_channels"] if pe_type == "concat" else [])
+
     transforms = _base_transforms() + [
         SpatialPadd(keys=ALL_KEYS, spatial_size=patch_size, mode="constant", method="end"),
         RandCropByPosNegLabeld(
@@ -142,24 +157,31 @@ def build_train_transform(patch_size, num_samples: int = 2,
             image_key="t1",
             image_threshold=0,
         ),
-        RandFlipd(keys=ALL_KEYS, spatial_axis=0, prob=0.5),
-        RandFlipd(keys=ALL_KEYS, spatial_axis=1, prob=0.5),
-        RandFlipd(keys=ALL_KEYS, spatial_axis=2, prob=0.5),
-        RandRotate90d(keys=ALL_KEYS, prob=0.2, max_k=3),
-        RandScaleIntensityd(keys=MODALITY_KEYS, factors=0.1, prob=0.15),
-        RandShiftIntensityd(keys=MODALITY_KEYS, offsets=0.1, prob=0.15),
-        RandGaussianNoised(keys=MODALITY_KEYS, std=0.05, prob=0.1),
     ]
+    # PE transforms BEFORE geometric augmentations so coord_channels can be co-transformed
     if pe_type in ("film", "concat"):
         transforms.append(RecordPatchCenterd(ref_key="t1"))
     if pe_type == "concat":
         transforms.append(AddCoordChannelsd(ref_key="t1"))
+    transforms += [
+        RandFlipd(keys=aug_keys, spatial_axis=0, prob=0.5),
+        RandFlipd(keys=aug_keys, spatial_axis=1, prob=0.5),
+        RandFlipd(keys=aug_keys, spatial_axis=2, prob=0.5),
+        RandRotate90d(keys=aug_keys, prob=0.2, max_k=3),
+        RandScaleIntensityd(keys=MODALITY_KEYS, factors=0.1, prob=0.15),
+        RandShiftIntensityd(keys=MODALITY_KEYS, offsets=0.1, prob=0.15),
+        RandGaussianNoised(keys=MODALITY_KEYS, std=0.05, prob=0.1),
+    ]
     transforms.append(ToTensord(keys=ALL_KEYS))
     return Compose(transforms)
 
 
 def build_val_transform(pe_type: str = "none") -> Compose:
     transforms = _base_transforms()
+    if pe_type in ("film", "concat"):
+        transforms.append(RecordPatchCenterd(ref_key="t1"))
+    if pe_type == "concat":
+        transforms.append(AddCoordChannelsd(ref_key="t1"))
     transforms.append(ToTensord(keys=ALL_KEYS))
     return Compose(transforms)
 

@@ -25,6 +25,9 @@ class WeightedFusion(nn.Module):
 
     def forward(self, logit_list: List[torch.Tensor],
                 active_indices: Tuple[int, ...] = (0, 1, 2, 3)) -> torch.Tensor:
+        assert len(active_indices) == len(logit_list), (
+            f"Length mismatch: {len(active_indices)} indices, {len(logit_list)} logits"
+        )
         w = F.softmax(self.weights[list(active_indices)], dim=0)  # (n_active,)
         stacked = torch.stack(logit_list, dim=0)                   # (n_active, B, C, H, W, D)
         return (w[:, None, None, None, None, None] * stacked).sum(dim=0)
@@ -50,6 +53,15 @@ class AttentionFusion(nn.Module):
 
     def forward(self, logit_list: List[torch.Tensor],
                 active_indices: Tuple[int, ...] = (0, 1, 2, 3)) -> torch.Tensor:
+        assert len(active_indices) == len(logit_list), (
+            f"Length mismatch: {len(active_indices)} indices, {len(logit_list)} logits"
+        )
+        assert all(0 <= i < self.num_modalities for i in active_indices), (
+            f"active_indices out of range [0, {self.num_modalities})"
+        )
+        assert len(set(active_indices)) == len(active_indices), (
+            "Duplicate indices in active_indices"
+        )
         n = len(logit_list)
         stacked = torch.stack(logit_list, dim=1)        # (B, n_active, C, H, W, D)
         B, _, C, H, W, D = stacked.shape

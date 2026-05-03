@@ -48,6 +48,7 @@ class V0EarlyFusion(nn.Module):
                 patch_center=None, coord_channels=None):
         # modalities: (B, 4, H, W, D)
         if self.pe_type == "concat":
+            assert coord_channels is not None, "coord_channels required for concat PE"
             x = torch.cat([modalities, coord_channels], dim=1)  # (B, 7, ...)
         else:
             x = modalities

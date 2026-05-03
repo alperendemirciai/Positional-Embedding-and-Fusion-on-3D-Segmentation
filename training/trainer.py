@@ -18,7 +18,7 @@ from models.pe_modules import make_coord_channels
 REGION_NAMES = ["WT", "TC", "ET"]
 
 
-def _prepare_batch(batch, device, pe_type):
+def _prepare_batch(batch, device):
     x  = stack_modalities(batch).to(device)          # (B, 4, H, W, D)
     y  = batch["seg"].to(device).float()              # (B, 3, H, W, D) — float for loss
     pc = batch.get("patch_center")
@@ -69,8 +69,7 @@ class Trainer:
             T_max=self.max_epochs,
             eta_min=1e-6,
         )
-        self.scaler = GradScaler("cpu" if not torch.cuda.is_available() else "cuda",
-                                  enabled=self.use_amp)
+        self.scaler = GradScaler(self.device.type, enabled=self.use_amp)
         self.writer = SummaryWriter(log_dir=str(self.tb_dir / experiment_name))
 
         self.best_val_dice   = -1.0
@@ -82,6 +81,8 @@ class Trainer:
         self.model.load_state_dict(ckpt["state_dict"])
         self.optimizer.load_state_dict(ckpt["optimizer"])
         self.scheduler.load_state_dict(ckpt["scheduler"])
+        if "scaler" in ckpt:
+            self.scaler.load_state_dict(ckpt["scaler"])
         self.best_val_dice  = ckpt.get("best_val_dice", -1.0)
         self.start_epoch    = ckpt["epoch"] + 1
         print(f"Resumed from {path} at epoch {self.start_epoch}")
@@ -93,6 +94,7 @@ class Trainer:
             "state_dict":    self.model.state_dict(),
             "optimizer":     self.optimizer.state_dict(),
             "scheduler":     self.scheduler.state_dict(),
+            "scaler":        self.scaler.state_dict(),
             "best_val_dice": self.best_val_dice,
             "cfg":           self.cfg,
         }, path)
@@ -102,7 +104,7 @@ class Trainer:
         total_loss = 0.0
         n = 0
         for batch in loader:
-            x, y, pc, cc = _prepare_batch(batch, self.device, self.pe_type)
+            x, y, pc, cc = _prepare_batch(batch, self.device)
             self.optimizer.zero_grad(set_to_none=True)
             _device_type = "cuda" if self.device.type == "cuda" else "cpu"
             with autocast(_device_type, enabled=self.use_amp):
@@ -115,7 +117,9 @@ class Trainer:
             self.scaler.update()
             total_loss += loss.item()
             n += 1
-        return total_loss / max(n, 1)
+        if n == 0:
+            raise RuntimeError("Training data loader yielded zero batches")
+        return total_loss / n
 
     @torch.no_grad()
     def _val_epoch(self, loader: DataLoader) -> dict:
@@ -123,7 +127,7 @@ class Trainer:
         metric = DiceMetric(include_background=True, reduction="mean_batch",
                             get_not_nans=False)
         for batch in loader:
-            x, y, pc, cc = _prepare_batch(batch, self.device, self.pe_type)
+            x, y, pc, cc = _prepare_batch(batch, self.device)
             # Val volumes are not randomly cropped, so PE metadata is absent.
             # Use volume-centre as a fallback; good enough for early stopping.
             if self.pe_type in ("film", "concat") and pc is None:

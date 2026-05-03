@@ -29,8 +29,10 @@ def deep_merge(base: dict, override: dict) -> dict:
 
 
 def load_config(config_path: str) -> dict:
-    base = yaml.safe_load(open("configs/base_config.yaml"))
-    override = yaml.safe_load(open(config_path))
+    with open("configs/base_config.yaml") as f:
+        base = yaml.safe_load(f)
+    with open(config_path) as f:
+        override = yaml.safe_load(f)
     return deep_merge(base, override)
 
 

@@ -13,7 +13,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from data_utils.brats_dataset import MODALITY_KEYS
 from evaluation.evaluate import ALL_MODALITY_SUBSETS, SUBSET_KEYS
 
 EXPERIMENTS = [

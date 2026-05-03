@@ -69,10 +69,9 @@ def smoke_config(data_root: str, splits_file: str, tmp_dir: str) -> dict:
             "foreground_ratio":    0.5,
         },
         "model": {
-            "variant":             "V0EarlyFusion",
-            "base_channels":       8,
-            "depth":               3,
-            "bottleneck_channels": 64,
+            "variant":       "V0EarlyFusion",
+            "base_channels": 8,
+            "depth":         3,
         },
         "fusion":  {"strategy": "mean"},
         "training": {

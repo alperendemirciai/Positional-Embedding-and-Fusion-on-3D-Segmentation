@@ -75,6 +75,7 @@ class UNet3D(nn.Module):
         x = self.encoders[-1](x)
 
         if self.pe_type == "film" and self.film_conditioner is not None:
+            assert patch_center is not None, "patch_center required for FiLM PE"
             x = self.film_conditioner(x, patch_center)
 
         for i, (up, dec) in enumerate(zip(self.upconvs, self.decoders)):
